@@ -89,7 +89,7 @@ jobs:
 
   # --- 第三个 Job：标记 Release 为正式版（可选） ---
   publish-release:
-    needs: build-binaries
+    needs: [create-release, build-binaries]
     runs-on: ubuntu-latest
     steps:
       - name: Publish Release
