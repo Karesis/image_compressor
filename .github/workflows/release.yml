@@ -7,7 +7,7 @@ on:
   push:
     tags:
       - 'v*' # 匹配所有以 'v' 开头的 tag
-      
+
 permissions:
   contents: write
 
@@ -65,9 +65,13 @@ jobs:
             echo "ASSET_PATH=dist/ImageCompressor.exe" >> $GITHUB_ENV
             echo "ASSET_NAME=ImageCompressor-Windows-x64.exe" >> $GITHUB_ENV
           elif [ "${{ runner.os }}" == "macOS" ]; then
-            echo "ASSET_PATH=dist/ImageCompressor.app" >> $GITHUB_ENV # macOS 是 .app 文件夹
-            echo "ASSET_NAME=ImageCompressor-macOS.zip" >> $GITHUB_ENV # 我们把它压缩成 zip 上传
-            zip -r dist/ImageCompressor.app.zip dist/ImageCompressor.app
+            # 先定义好我们想要的最终文件名
+            local asset_name="ImageCompressor-macOS.zip"
+            # 使用这个名字来创建 zip 文件
+            zip -r dist/${asset_name} dist/ImageCompressor.app
+            # 然后把正确的 zip 文件路径和名字设置到环境变量
+            echo "ASSET_PATH=dist/${asset_name}" >> $GITHUB_ENV
+            echo "ASSET_NAME=${asset_name}" >> $GITHUB_ENV
           else # Linux
             echo "ASSET_PATH=dist/ImageCompressor" >> $GITHUB_ENV
             echo "ASSET_NAME=ImageCompressor-Linux-x86_64" >> $GITHUB_ENV
