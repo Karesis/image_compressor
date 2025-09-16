@@ -1,6 +1,6 @@
 # .github/workflows/release.yml
 
-name: Create Release and Build Binaries
+name: Create Release and Build Installers
 
 on:
   push:
@@ -11,8 +11,7 @@ permissions:
   contents: write
 
 jobs:
-  # --- Job 1: 并行构建所有平台 ---
-  build:
+  build_and_release:
     strategy:
       matrix:
         os: [windows-latest, macos-latest, ubuntu-latest]
@@ -32,57 +31,90 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
+      - name: Create Inno Setup script
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cat > setup.iss << EOL
+          [Setup]
+          AppName=ImageCompressor
+          AppVersion=${{ github.ref_name }}
+          DefaultDirName={autopf}\\ImageCompressor
+          OutputBaseFilename=ImageCompressor-Setup-${{ github.ref_name }}
+          Compression=lzma2
+          SolidCompression=yes
+          WizardStyle=modern
+          [Files]
+          Source: "dist\\ImageCompressor.exe"; DestDir: "{app}"; Flags: ignoreversion
+          [Icons]
+          Name: "{group}\\ImageCompressor"; Filename: "{app}\\ImageCompressor.exe"
+          Name: "{commondesktop}\\ImageCompressor"; Filename: "{app}\\ImageCompressor.exe"; Tasks: desktopicon
+          [Tasks]
+          Name: "desktopicon"; Description: "Create a desktop icon"; GroupDescription: "Additional icons:";
+          EOL
+      
       - name: Build with PyInstaller
         run: pyinstaller --onefile --windowed --name ImageCompressor ./src/main.py
 
-      - name: Prepare artifact
-        id: prepare-artifact
+      # --- Windows Installer ---
+      - name: Install Inno Setup
+        if: runner.os == 'Windows'
+        uses: crazy-max/ghaction-chocolatey@v3
+        with:
+          args: install innosetup
+
+      - name: Compile Windows Installer
+        if: runner.os == 'Windows'
         shell: bash
         run: |
-          # 为不同平台准备产物
-          if [ "${{ runner.os }}" == "Windows" ]; then
-            mv dist/ImageCompressor.exe dist/ImageCompressor-Windows.exe
-            echo "ARTIFACT_PATH=dist/ImageCompressor-Windows.exe" >> $GITHUB_ENV
-          elif [ "${{ runner.os }}" == "macOS" ]; then
-            zip -r dist/ImageCompressor-macOS.zip dist/ImageCompressor.app
-            echo "ARTIFACT_PATH=dist/ImageCompressor-macOS.zip" >> $GITHUB_ENV
-          else # Linux
-            mv dist/ImageCompressor dist/ImageCompressor-Linux
-            echo "ARTIFACT_PATH=dist/ImageCompressor-Linux" >> $GITHUB_ENV
-          fi
+          # Inno Setup 的编译器路径
+          ISCC_PATH="/c/Program Files (x86)/Inno Setup 6/iscc.exe"
+          # 运行编译
+          "$ISCC_PATH" setup.iss
+          # 准备最终产物
+          echo "ASSET_PATH=$(ls Output/*.exe)" >> $GITHUB_ENV
+          echo "ASSET_NAME=ImageCompressor-Setup-${{ github.ref_name }}.exe" >> $GITHUB_ENV
 
-      - name: Upload artifact for release
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ runner.os }}-artifact # 为每个产物起一个唯一的名字
-          path: ${{ env.ARTIFACT_PATH }}
+      # --- macOS Installer ---
+      - name: Build macOS DMG
+        if: runner.os == 'macOS'
+        run: |
+          brew install create-dmg
+          create-dmg \
+            --volname "ImageCompressor Installer" \
+            --window-pos 200 120 \
+            --window-size 800 400 \
+            --icon-size 100 \
+            --icon "ImageCompressor.app" 200 190 \
+            --hide-extension "ImageCompressor.app" \
+            --app-drop-link 600 185 \
+            "ImageCompressor-${{ github.ref_name }}.dmg" \
+            "dist/ImageCompressor.app"
+          # 准备最终产物
+          echo "ASSET_PATH=ImageCompressor-${{ github.ref_name }}.dmg" >> $GITHUB_ENV
+          echo "ASSET_NAME=ImageCompressor-${{ github.ref_name }}.dmg" >> $GITHUB_ENV
 
-  # --- Job 2: 创建并发布 Release ---
-  release:
-    needs: build # 等待所有的 build 任务完成
-    runs-on: ubuntu-latest
-    steps:
-      - name: Create Draft Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref_name }}
-          release_name: Release ${{ github.ref_name }}
-          body: "自动打包发布的新版本。"
-          draft: false # 直接发布，不再需要草稿
-          prerelease: false
-      
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts # 下载到 artifacts 文件夹
+      # --- Linux Installer ---
+      - name: Build Linux AppImage
+        if: runner.os == 'Linux'
+        run: |
+          # 下载所需工具
+          wget -c https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage -O linuxdeploy
+          wget -c https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
+          chmod +x linuxdeploy appimagetool
+          
+          # 使用 linuxdeploy 部署依赖
+          ./linuxdeploy --appdir AppDir --executable dist/ImageCompressor --output appimage
+          
+          # 打包成 AppImage
+          ./appimagetool AppDir ImageCompressor-${{ github.ref_name }}.AppImage
+          # 准备最终产物
+          echo "ASSET_PATH=ImageCompressor-${{ github.ref_name }}.AppImage" >> $GITHUB_ENV
+          echo "ASSET_NAME=ImageCompressor-${{ github.ref_name }}.AppImage" >> $GITHUB_ENV
 
-      - name: Display structure of downloaded files
-        run: ls -R artifacts
-
-      - name: Upload assets to release
+      - name: Upload Release Asset
         uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: artifacts/**/* # 使用通配符上传所有下载的产物
+          files: ${{ env.ASSET_PATH }}
+          name: ${{ env.ASSET_NAME }}
