@@ -7,6 +7,9 @@ on:
   push:
     tags:
       - 'v*' # 匹配所有以 'v' 开头的 tag
+      
+permissions:
+  contents: write
 
 jobs:
   # --- 第一个 Job：创建 Release 草稿 ---
