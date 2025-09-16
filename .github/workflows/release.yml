@@ -1,0 +1,99 @@
+# .github/workflows/release.yml
+
+name: Create Release and Build Binaries
+
+# 1. 触发条件：只有当一个新的 tag (比如 v1.0, v1.1) 被推送到仓库时才运行
+on:
+  push:
+    tags:
+      - 'v*' # 匹配所有以 'v' 开头的 tag
+
+jobs:
+  # --- 第一个 Job：创建 Release 草稿 ---
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+    steps:
+      - name: Create Draft Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 这是 GitHub 自动提供的令牌
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          body: "自动打包发布的新版本。"
+          draft: true # 创建一个草稿，等所有文件上传后再手动发布
+          prerelease: false
+
+  # --- 第二个 Job：打包不同系统的程序 ---
+  build-binaries:
+    needs: create-release # 等待 create-release Job 完成
+    strategy:
+      matrix:
+        # 定义三个构建目标：Windows, macOS, Linux
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }} # 在对应的虚拟服务器上运行
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11' # 你可以指定需要的 Python 版本
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build with PyInstaller
+        run: pyinstaller --onefile --windowed --name ImageCompressor ./src/main.py # 你的打包命令
+
+      - name: Prepare artifact name
+        id: prepare-artifact
+        shell: bash
+        run: |
+          # 根据操作系统为打包好的文件命名
+          if [ "${{ runner.os }}" == "Windows" ]; then
+            echo "ASSET_PATH=dist/ImageCompressor.exe" >> $GITHUB_ENV
+            echo "ASSET_NAME=ImageCompressor-Windows-x64.exe" >> $GITHUB_ENV
+          elif [ "${{ runner.os }}" == "macOS" ]; then
+            echo "ASSET_PATH=dist/ImageCompressor.app" >> $GITHUB_ENV # macOS 是 .app 文件夹
+            echo "ASSET_NAME=ImageCompressor-macOS.zip" >> $GITHUB_ENV # 我们把它压缩成 zip 上传
+            zip -r dist/ImageCompressor.app.zip dist/ImageCompressor.app
+          else # Linux
+            echo "ASSET_PATH=dist/ImageCompressor" >> $GITHUB_ENV
+            echo "ASSET_NAME=ImageCompressor-Linux-x86_64" >> $GITHUB_ENV
+          fi
+      
+      - name: Upload to Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ${{ env.ASSET_PATH }}
+          asset_name: ${{ env.ASSET_NAME }}
+          asset_content_type: application/octet-stream
+
+  # --- 第三个 Job：标记 Release 为正式版（可选） ---
+  publish-release:
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish Release
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: ${{ needs.create-release.outputs.id }},
+              draft: false,
+              prerelease: false
+            })
