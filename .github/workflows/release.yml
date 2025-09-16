@@ -66,7 +66,7 @@ jobs:
             echo "ASSET_NAME=ImageCompressor-Windows-x64.exe" >> $GITHUB_ENV
           elif [ "${{ runner.os }}" == "macOS" ]; then
             # 先定义好我们想要的最终文件名
-            local asset_name="ImageCompressor-macOS.zip"
+            asset_name="ImageCompressor-macOS.zip"
             # 使用这个名字来创建 zip 文件
             zip -r dist/${asset_name} dist/ImageCompressor.app
             # 然后把正确的 zip 文件路径和名字设置到环境变量
