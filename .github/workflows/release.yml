@@ -2,50 +2,29 @@
 
 name: Create Release and Build Binaries
 
-# 1. 触发条件：只有当一个新的 tag (比如 v1.0, v1.1) 被推送到仓库时才运行
 on:
   push:
     tags:
-      - 'v*' # 匹配所有以 'v' 开头的 tag
+      - 'v*'
 
 permissions:
   contents: write
 
 jobs:
-  # --- 第一个 Job：创建 Release 草稿 ---
-  create-release:
-    runs-on: ubuntu-latest
-    outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
-    steps:
-      - name: Create Draft Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 这是 GitHub 自动提供的令牌
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
-          body: "自动打包发布的新版本。"
-          draft: true # 创建一个草稿，等所有文件上传后再手动发布
-          prerelease: false
-
-  # --- 第二个 Job：打包不同系统的程序 ---
-  build-binaries:
-    needs: create-release # 等待 create-release Job 完成
+  # --- Job 1: 并行构建所有平台 ---
+  build:
     strategy:
       matrix:
-        # 定义三个构建目标：Windows, macOS, Linux
         os: [windows-latest, macos-latest, ubuntu-latest]
-    runs-on: ${{ matrix.os }} # 在对应的虚拟服务器上运行
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11' # 你可以指定需要的 Python 版本
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
@@ -54,53 +33,56 @@ jobs:
           pip install pyinstaller
 
       - name: Build with PyInstaller
-        run: pyinstaller --onefile --windowed --name ImageCompressor ./src/main.py # 你的打包命令
+        run: pyinstaller --onefile --windowed --name ImageCompressor ./src/main.py
 
-      - name: Prepare artifact name
+      - name: Prepare artifact
         id: prepare-artifact
         shell: bash
         run: |
-          # 根据操作系统为打包好的文件命名
+          # 为不同平台准备产物
           if [ "${{ runner.os }}" == "Windows" ]; then
-            echo "ASSET_PATH=dist/ImageCompressor.exe" >> $GITHUB_ENV
-            echo "ASSET_NAME=ImageCompressor-Windows-x64.exe" >> $GITHUB_ENV
+            mv dist/ImageCompressor.exe dist/ImageCompressor-Windows.exe
+            echo "ARTIFACT_PATH=dist/ImageCompressor-Windows.exe" >> $GITHUB_ENV
           elif [ "${{ runner.os }}" == "macOS" ]; then
-            # 先定义好我们想要的最终文件名
-            asset_name="ImageCompressor-macOS.zip"
-            # 使用这个名字来创建 zip 文件
-            zip -r dist/${asset_name} dist/ImageCompressor.app
-            # 然后把正确的 zip 文件路径和名字设置到环境变量
-            echo "ASSET_PATH=dist/${asset_name}" >> $GITHUB_ENV
-            echo "ASSET_NAME=${asset_name}" >> $GITHUB_ENV
+            zip -r dist/ImageCompressor-macOS.zip dist/ImageCompressor.app
+            echo "ARTIFACT_PATH=dist/ImageCompressor-macOS.zip" >> $GITHUB_ENV
           else # Linux
-            echo "ASSET_PATH=dist/ImageCompressor" >> $GITHUB_ENV
-            echo "ASSET_NAME=ImageCompressor-Linux-x86_64" >> $GITHUB_ENV
+            mv dist/ImageCompressor dist/ImageCompressor-Linux
+            echo "ARTIFACT_PATH=dist/ImageCompressor-Linux" >> $GITHUB_ENV
           fi
-      
-      - name: Upload to Release
-        uses: actions/upload-release-asset@v1
+
+      - name: Upload artifact for release
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ runner.os }}-artifact # 为每个产物起一个唯一的名字
+          path: ${{ env.ARTIFACT_PATH }}
+
+  # --- Job 2: 创建并发布 Release ---
+  release:
+    needs: build # 等待所有的 build 任务完成
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create Draft Release
+        id: create_release
+        uses: actions/create-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ${{ env.ASSET_PATH }}
-          asset_name: ${{ env.ASSET_NAME }}
-          asset_content_type: application/octet-stream
-
-  # --- 第三个 Job：标记 Release 为正式版（可选） ---
-  publish-release:
-    needs: [create-release, build-binaries]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Publish Release
-        uses: actions/github-script@v6
+          tag_name: ${{ github.ref_name }}
+          release_name: Release ${{ github.ref_name }}
+          body: "自动打包发布的新版本。"
+          draft: false # 直接发布，不再需要草稿
+          prerelease: false
+      
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            await github.rest.repos.updateRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              release_id: ${{ needs.create-release.outputs.id }},
-              draft: false,
-              prerelease: false
-            })
+          path: artifacts # 下载到 artifacts 文件夹
+
+      - name: Display structure of downloaded files
+        run: ls -R artifacts
+
+      - name: Upload assets to release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/**/* # 使用通配符上传所有下载的产物
