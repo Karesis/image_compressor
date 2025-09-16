@@ -80,6 +80,8 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           brew install create-dmg
+          echo "Waiting 5 seconds for the filesystem to release locks..."
+          sleep 5 # <--- 在这里添加一个5秒的延时
           create-dmg \
             --volname "ImageCompressor Installer" \
             --window-pos 200 120 \
