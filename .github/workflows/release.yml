@@ -31,10 +31,17 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      - name: Create Inno Setup script
+      - name: Build with PyInstaller
+        run: pyinstaller --onefile --windowed --name ImageCompressor ./src/main.py
+
+      # --- Windows Installer ---
+      - name: Build Windows Installer
         if: runner.os == 'Windows'
         shell: bash
         run: |
+          echo "Waiting 2 seconds as a precaution..."
+          sleep 2 # 为 Windows 添加一个简短的保险延时
+          
           cat > setup.iss << EOL
           [Setup]
           AppName=ImageCompressor
@@ -48,69 +55,66 @@ jobs:
           Source: "dist\\ImageCompressor.exe"; DestDir: "{app}"; Flags: ignoreversion
           [Icons]
           Name: "{group}\\ImageCompressor"; Filename: "{app}\\ImageCompressor.exe"
-          Name: "{commondesktop}\\ImageCompressor"; Filename: "{app}\\ImageCompressor.exe"; Tasks: desktopicon
-          [Tasks]
-          Name: "desktopicon"; Description: "Create a desktop icon"; GroupDescription: "Additional icons:";
           EOL
-      
-      - name: Build with PyInstaller
-        run: pyinstaller --onefile --windowed --name ImageCompressor ./src/main.py
 
-      # --- Windows Installer ---
-      - name: Install Inno Setup
-        if: runner.os == 'Windows'
-        uses: crazy-max/ghaction-chocolatey@v3
-        with:
-          args: install innosetup
-
-      - name: Compile Windows Installer
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          # Inno Setup 的编译器路径
+          choco install innosetup
           ISCC_PATH="/c/Program Files (x86)/Inno Setup 6/iscc.exe"
-          # 运行编译
           "$ISCC_PATH" setup.iss
-          # 准备最终产物
+          
           echo "ASSET_PATH=$(ls Output/*.exe)" >> $GITHUB_ENV
           echo "ASSET_NAME=ImageCompressor-Setup-${{ github.ref_name }}.exe" >> $GITHUB_ENV
 
-      # --- macOS Installer ---
+      # --- macOS Installer (with smart wait) ---
       - name: Build macOS DMG
         if: runner.os == 'macOS'
         run: |
+          # 智能等待循环，代替 sleep 5
+          echo "Waiting for .app bundle to be ready..."
+          for i in {1..10}; do
+            if [ -d "dist/ImageCompressor.app" ]; then
+              echo ".app bundle found. Proceeding."
+              break
+            fi
+            echo "Attempt $i: .app bundle not yet available, waiting 1 second..."
+            sleep 1
+          done
+          
           brew install create-dmg
-          echo "Waiting 5 seconds for the filesystem to release locks..."
-          sleep 5 # <--- 在这里添加一个5秒的延时
           create-dmg \
             --volname "ImageCompressor Installer" \
-            --window-pos 200 120 \
-            --window-size 800 400 \
-            --icon-size 100 \
-            --icon "ImageCompressor.app" 200 190 \
-            --hide-extension "ImageCompressor.app" \
-            --app-drop-link 600 185 \
             "ImageCompressor-${{ github.ref_name }}.dmg" \
             "dist/ImageCompressor.app"
-          # 准备最终产物
+          
           echo "ASSET_PATH=ImageCompressor-${{ github.ref_name }}.dmg" >> $GITHUB_ENV
           echo "ASSET_NAME=ImageCompressor-${{ github.ref_name }}.dmg" >> $GITHUB_ENV
 
-      # --- Linux Installer ---
+      # --- Linux Installer (with desktop file) ---
       - name: Build Linux AppImage
         if: runner.os == 'Linux'
         run: |
-          # 下载所需工具
+          # 1. 创建 .desktop 文件
+          cat > imagecompressor.desktop << EOL
+          [Desktop Entry]
+          Name=ImageCompressor
+          Exec=ImageCompressor
+          Icon=ImageCompressor
+          Type=Application
+          Categories=Utility;
+          EOL
+          
+          # 2. 下载工具
           wget -c https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage -O linuxdeploy
-          wget -c https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
-          chmod +x linuxdeploy appimagetool
+          chmod +x linuxdeploy
           
-          # 使用 linuxdeploy 部署依赖
-          ./linuxdeploy --appdir AppDir --executable dist/ImageCompressor --output appimage
+          # 3. 运行部署，并传入 .desktop 文件
+          ./linuxdeploy --appdir AppDir \
+            --executable dist/ImageCompressor \
+            --desktop-file ./imagecompressor.desktop \
+            --output appimage
           
-          # 打包成 AppImage
-          ./appimagetool AppDir ImageCompressor-${{ github.ref_name }}.AppImage
-          # 准备最终产物
+          # AppImage 会自动生成，无需再调用 appimagetool
+          mv ImageCompressor-*.AppImage ImageCompressor-${{ github.ref_name }}.AppImage
+          
           echo "ASSET_PATH=ImageCompressor-${{ github.ref_name }}.AppImage" >> $GITHUB_ENV
           echo "ASSET_NAME=ImageCompressor-${{ github.ref_name }}.AppImage" >> $GITHUB_ENV
 
